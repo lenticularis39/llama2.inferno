@@ -7,7 +7,7 @@ include "draw.m";
 
 sys: Sys;
 
-Config : adt {
+Config: adt {
 	dim: int; # transformer dimension
 	hidden_dim: int; # for ffn layers
 	n_layers: int; # number of layers
@@ -19,7 +19,7 @@ Config : adt {
 	read: fn(c: self ref Config, fd: ref Sys->FD);
 };
 
-TransformerWeights : adt {
+TransformerWeights: adt {
 	# token embedding table
 	token_embedding_table: array of real; # (vocab_size, dim)
 	# weights for rmsnorms
@@ -40,7 +40,7 @@ TransformerWeights : adt {
 	wcls: array of real;
 };
 
-RunState : adt {
+RunState: adt {
 	x: array of real; # activation at current time stamp (dim,)
 	xb: array of real; # same, but inside a residual branch (dim,)
 	xb2: array of real; # an additional buffer just for convenience (dim,)
@@ -67,7 +67,7 @@ Llama2: module {
 	init: fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
-read_int_le(fd: ref Sys->FD) : int {
+read_int_le(fd: ref Sys->FD): int {
 	if (sys->read(fd, buf, 4) < 4)
 		raise "fail:eof";
 
