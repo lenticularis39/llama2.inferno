@@ -95,7 +95,8 @@ read_weights(fd: ref Sys->FD, size: int): array of real {
 	if (sys->read(fd, buf, len buf) != len buf)
 		raise "fail:eof";
 
-	endian_swap(buf);
+	for (i := 0; i < size; i++)
+		endian_swap(buf[4 * i:]);
 	math->import_real32(buf, weights);
 
 	return weights;
