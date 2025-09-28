@@ -4,8 +4,13 @@ implement Llama2;
 
 include "sys.m";
 include "draw.m";
+include "math.m";
 
 sys: Sys;
+math: Math;
+
+read_int_buf: array of byte;
+read_int_ibuf : array of int;
 
 Config: adt {
 	dim: int; # transformer dimension
@@ -15,6 +20,7 @@ Config: adt {
 	n_kv_heads: int; # number of query heads
 	vocab_size: int; # vocabulary size, usually 256 (byte-level)
 	seq_len: int;
+	shared_weights: int;
 
 	read: fn(c: self ref Config, fd: ref Sys->FD);
 };
@@ -38,6 +44,8 @@ TransformerWeights: adt {
 	rms_final_weight: array of real; # (dim,)
 	# (optional) classifier weights for the logits, on the last layer
 	wcls: array of real;
+
+	read: fn(w: self ref TransformerWeights, c : ref Config, fd: ref Sys->FD);
 };
 
 RunState: adt {
@@ -63,26 +71,62 @@ Transformer: adt {
 };
 
 Llama2: module {
-	buf: array of byte;
 	init: fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
-read_int_le(fd: ref Sys->FD): int {
-	if (sys->read(fd, buf, 4) < 4)
+read_int(fd: ref Sys->FD): int {
+	if (sys->read(fd, read_int_buf, 4) < 4)
 		raise "fail:eof";
 
-	return (int buf[0] << 24) | (int buf[1] << 16)
-		   | (int buf[2] << 8) | (int buf[3]);
+	math->import_int(read_int_buf, read_int_ibuf);
+
+	return read_int_ibuf[0];
+}
+
+read_weights(fd: ref Sys->FD, size: int): array of real {
+	buf := array[size * 4] of byte;
+	weights := array[size] of real;
+
+	if (sys->read(fd, buf, len buf) != len buf)
+		raise "fail:eof";
+
+	math->import_real32(buf, weights);
+
+	return weights;
 }
 
 Config.read(c: self ref Config, fd: ref Sys->FD) {
-	c.dim = read_int_le(fd);
-	c.hidden_dim = read_int_le(fd);
-	c.n_layers = read_int_le(fd);
-	c.n_heads = read_int_le(fd);
-	c.n_kv_heads = read_int_le(fd);
-	c.vocab_size = read_int_le(fd);
-	c.seq_len = read_int_le(fd);
+	c.dim = read_int(fd);
+	c.hidden_dim = read_int(fd);
+	c.n_layers = read_int(fd);
+	c.n_heads = read_int(fd);
+	c.n_kv_heads = read_int(fd);
+	c.vocab_size = read_int(fd);
+	c.seq_len = read_int(fd);
+}
+
+TransformerWeights.read(w: self ref TransformerWeights, c: ref Config, fd: ref Sys->FD) {
+	buf : array of byte;
+	size : int;
+
+	head_size := c.dim / c.n_heads;
+
+	w.token_embedding_table = read_weights(fd, c.vocab_size * c.dim);
+	w.rms_att_weight = read_weights(fd, c.n_layers);
+	w.wq = read_weights(fd, c.n_layers * c.dim * (c.n_heads * head_size));
+	w.wk = read_weights(fd, c.n_layers * c.dim * (c.n_kv_heads * head_size));
+	w.wv = read_weights(fd, c.n_layers * c.dim * (c.n_kv_heads * head_size));
+	w.wo = read_weights(fd, c.n_layers * (c.n_heads * head_size) * c.dim);
+	w.rms_ffn_weight = read_weights(fd, c.n_layers * c.dim);
+	w.w1 = read_weights(fd, c.n_layers * c.dim * c.hidden_dim);
+	w.w2 = read_weights(fd, c.n_layers * c.hidden_dim * c.dim);
+	w.w3 = read_weights(fd, c.n_layers * c.dim * c.hidden_dim);
+	w.rms_final_weight = read_weights(fd, c.dim);
+
+	if (c.shared_weights)
+		w.wcls = w.token_embedding_table;
+	else
+		w.wcls = read_weights(fd, c.seq_len * head_size);
 }
 
 alloc_run_state(s: ref RunState, p: ref Config) {
@@ -110,13 +154,20 @@ read_checkpoint(checkpoint: string, config: ref Config, weights: ref Transformer
 	config.read(fd);
 
 	# negative vocab size is a hacky way of signaling unshared weights
-	shared_weights := config.vocab_size > 0;
-	config.vocab_size *= 2 * shared_weights - 1;
+	config.shared_weights = config.vocab_size > 0;
+	config.vocab_size *= 2 * config.shared_weights - 1;
+
+	# load weights
+	weights.read(config, fd);
 }
 
 init(ctxt: ref Draw->Context, argv: list of string) {
-	buf = array[4] of byte;
 	sys = load Sys Sys->PATH;
+	math = load Math Math->PATH;
+
+	read_int_buf = array[4] of byte;
+	read_int_ibuf = array[1] of int;
+
 	c := ref Config;
 	w := ref TransformerWeights;
 
