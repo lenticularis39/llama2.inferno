@@ -74,10 +74,15 @@ Llama2: module {
 	init: fn(ctxt: ref Draw->Context, argv: list of string);
 };
 
+endian_swap(b : array of byte) {
+	(b[0], b[1], b[2], b[3]) = (b[3], b[2], b[1], b[0]);
+}
+
 read_int(fd: ref Sys->FD): int {
 	if (sys->read(fd, read_int_buf, 4) < 4)
 		raise "fail:eof";
 
+	endian_swap(read_int_buf);
 	math->import_int(read_int_buf, read_int_ibuf);
 
 	return read_int_ibuf[0];
@@ -90,6 +95,7 @@ read_weights(fd: ref Sys->FD, size: int): array of real {
 	if (sys->read(fd, buf, len buf) != len buf)
 		raise "fail:eof";
 
+	endian_swap(buf);
 	math->import_real32(buf, weights);
 
 	return weights;
