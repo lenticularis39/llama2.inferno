@@ -65,9 +65,9 @@ RunState: adt {
 };
 
 Transformer: adt {
-	config: Config; # the hyperparameters of the architecture (the blueprint)
-	weights: TransformerWeights; # the weights of the model
-	state: RunState; # buffers for the "wave" of the activations in the forward pass
+	config: ref Config; # the hyperparameters of the architecture (the blueprint)
+	weights: ref TransformerWeights; # the weights of the model
+	state: ref RunState; # buffers for the "wave" of the activations in the forward pass
 };
 
 Llama2: module {
@@ -168,6 +168,17 @@ read_checkpoint(checkpoint: string, config: ref Config, weights: ref Transformer
 	weights.read(config, fd);
 }
 
+build_transformer(t: ref Transformer, checkpoint_path: string) {
+	# allocate Transformer fields
+	t.config = ref Config;
+	t.weights = ref TransformerWeights;
+	t.state = ref RunState;
+	# read in the Config and the Weights from the checkpoint
+	read_checkpoint(checkpoint_path, t.config, t.weights);
+	# allocate the RunState buffers
+	alloc_run_state(t.state, t.config);
+}
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	sys = load Sys Sys->PATH;
 	math = load Math Math->PATH;
@@ -175,8 +186,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	read_int_buf = array[4] of byte;
 	read_int_ibuf = array[1] of int;
 
-	c := ref Config;
-	w := ref TransformerWeights;
+	t := ref Transformer;
 
 	argv = tl argv;
 	if (argv == nil)
@@ -184,7 +194,9 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 
 	sys->print("argv: %s\n", hd argv);
 
-	read_checkpoint(hd argv, c, w);
+	build_transformer(t, hd argv);
+	c := t.config;
+
 	sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
 			  c.dim, c.hidden_dim, c.n_layers);
 	sys->print("n_heads: %d, n_kv_heads: %d, vocab_size: %d\n",
