@@ -179,6 +179,193 @@ build_transformer(t: ref Transformer, checkpoint_path: string) {
 	alloc_run_state(t.state, t.config);
 }
 
+# ----------------------------------------------------------
+# neural net blocks; the dynamics of the Transformer
+
+rmsnorm(o: array of real, x: array of real, weight: array of real) {
+	# calculate sum of squares
+	ss := 0.0;
+	for (j := 0; j < len x; j++) {
+		ss += x[j] * x[j];
+	}
+	ss /= real (len x);
+	ss += 1e-5;
+	ss = 1.0 / math->sqrt(ss);
+	# normalize and scale
+	for (j = 0; j < len o; j++) {
+		o[j] = weight[j] * (ss * x[j]);
+	}
+}
+
+softmax(x: array of real) {
+	# find max value (for numerical stability)
+	max_val := x[0];
+	for (i := 1; i < len x; i++) {
+		if (x[i] > max_val) {
+			max_val = x[i];
+		}
+	}
+	# exp and sum
+	sum := 0.0;
+	for (i = 0; i < len x; i++) {
+		x[i] = math->exp(x[i] - max_val);
+		sum += x[i];
+	}
+	# normalize
+	for (i = 0; i < len x; i++) {
+		x[i] /= sum;
+	}
+}
+
+matmul(xout: array of real, x: array of real, w: array of real, n: int, d: int) {
+	# W (d,n) @ x (n,) -> xout (d,)
+	# by fat the most amount of time is spent inside this little function
+	for (i := 0; i < d; i++) {
+		val := 0.0;
+		for (j := 0; j < n; j++) {
+			val += w[i * n + j] * x[j];
+		}
+		xout[i] = val;
+	}
+}
+
+forward(transformer: ref Transformer, token: int, pos: int): array of real {
+	# a few convenience variables
+	c := transformer.config;
+	w := transformer.weights;
+	s := transformer.state;
+	x := s.x;
+	dim := c.dim;
+	kv_dim := (c.dim * c.n_kv_heads) / c.n_heads;
+	kv_mul := c.n_heads / c.n_kv_heads; # integer multiplier of the kv sharing in multiquery
+	hidden_dim := c.hidden_dim;
+	head_size := dim / c.n_heads;
+
+	# copy the token embedding into x
+	content_row := w.token_embedding_table[token * dim:];
+	x[:] = content_row[:dim];
+
+	# forward all the layers
+	for (l := 0; l < c.n_layers; l++) {
+		# attention rmsnorm
+		rmsnorm(s.xb, x, w.rms_att_weight[l * dim:]);
+
+		# key and value point to the kv cache
+		loff := l * c.seq_len * kv_dim;
+		s.k = s.key_cache[loff + pos * kv_dim:];
+		s.v = s.value_cache[loff + pos * kv_dim:];
+
+		# qkv matmuls for this position
+		matmul(s.q, s.xb, w.wq[l * dim * dim:], dim, dim);
+		matmul(s.k, s.xb, w.wk[l * dim * kv_dim:], dim, kv_dim);
+		matmul(s.v, s.xb, w.wv[l * dim * kv_dim:], dim, kv_dim);
+
+		# RoPE relative positional encoding: complex-valued rotate q and k in each head
+		for (i := 0; i < dim; i += 2) {
+			head_dim := i % head_size;
+			freq := 1.0 / math->pow(10000.0, (real head_dim) / (real head_size));
+			val := (real pos) * freq;
+			fcr := math->cos(val);
+			fci := math->sin(val);
+			rotn: int;
+			if (i < kv_dim)
+				rotn = 2;
+			else
+				rotn = 1;
+			for (v := 0; v < rotn; v++) {
+				vec : array of real;
+				if (v == 0)
+					vec = s.q;
+				else
+					vec = s.k;
+				v0 := vec[i];
+				v1 := vec[i + 1];
+				vec[i] = v0 * fcr - v1 * fci;
+				vec[i + 1] = v0 * fci + v1 * fcr;
+			}
+		}
+
+		# multihead attention, iterate over all heads
+		for (h := 0; h < c.n_heads; h++) {
+			# get the query vector for this head
+			q := s.q[h * head_size:];
+			# attention scores for this head
+			att := s.att[h * c.seq_len:];
+			# iterate over all timesteps, including the current one
+			for (t := 0; t <= pos; t++) {
+				# get the key vector for this head and at this timestep
+				k := s.key_cache[loff + t * kv_dim + (h / kv_mul) * head_size:];
+				# calculate the attention score as the dot product of q and k
+				score := 0.0;
+				for (i = 0; i < head_size; i++) {
+					score += q[i] * k[i];
+				}
+				score /= math->sqrt(real head_size);
+				# save the score to the attention buffer
+				att[t] = score;
+			}
+
+			# softmax the scores to get attention weights, from 0..pos inclusively
+			softmax(att[:pos + 1]);
+
+			# weighted sum of the values, store back into xb
+			xb := s.xb[h * head_size:];
+			xb[:] = array[head_size] of {* => 0.0};
+			for (t = 0; t <= pos; t++) {
+				# get the value vector for this head and at this timestamp
+				v := s.value_cache[loff + t * kv_dim + (h / kv_mul) * head_size:];
+				# get the attention weight for this timestamp
+				a := att[t];
+				# accumulate the weighted value into xb
+				for (i = 0; i < head_size; i++) {
+					xb[i] += a * v[i];
+				}
+			}
+		}
+
+		# final matmul to get the output of the attention
+		matmul(s.xb2, s.xb, w.wo[l * dim * dim:], dim, dim);
+
+		# residual connection back into x
+		for (i = 0; i < dim; i++) {
+			x[i] += s.xb2[i];
+		}
+
+		# ffn rmsnorm
+		rmsnorm(s.xb, x, w.rms_ffn_weight[l * dim:l * dim + dim]);
+
+		# Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+		# first calculate self.w1(w) and self.w3(x)
+		matmul(s.hb, s.xb, w.w1[l * dim * hidden_dim:], dim, hidden_dim);
+		matmul(s.hb2, s.xb, w.w3[l * dim * hidden_dim:], dim, hidden_dim);
+
+		# SwiGLU non-linearity
+		for (i = 0; i < hidden_dim; i++) {
+			val := s.hb[i];
+			# silu(x)=x*sigmoid(x)
+			val *= (1.0 / (1.0 + math->exp(-val)));
+			# elementwise multiply with w3(x)
+			val *= s.hb2[i];
+			s.hb[i] = val;
+		}
+
+		# final matmul to get the output of the ffn
+		matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim:], hidden_dim, dim);
+
+		# residual connection
+		for (i = 0; i < dim; i++) {
+			x[i] += s.xb[i];
+		}
+	}
+
+	# final rmsnorm
+	rmsnorm(x, x, w.rms_final_weight[:dim]);
+
+	# classifier into logits
+	matmul(s.logits, x, w.wcls, c.dim, c.vocab_size);
+	return s.logits;
+}
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	sys = load Sys Sys->PATH;
 	math = load Math Math->PATH;
