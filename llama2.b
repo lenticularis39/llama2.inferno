@@ -119,7 +119,7 @@ TransformerWeights.read(w: self ref TransformerWeights, c: ref Config, fd: ref S
 	head_size := c.dim / c.n_heads;
 
 	w.token_embedding_table = read_weights(fd, c.vocab_size * c.dim);
-	w.rms_att_weight = read_weights(fd, c.n_layers);
+	w.rms_att_weight = read_weights(fd, c.n_layers * c.dim);
 	w.wq = read_weights(fd, c.n_layers * c.dim * (c.n_heads * head_size));
 	w.wk = read_weights(fd, c.n_layers * c.dim * (c.n_kv_heads * head_size));
 	w.wv = read_weights(fd, c.n_layers * c.dim * (c.n_kv_heads * head_size));
@@ -184,15 +184,21 @@ build_transformer(t: ref Transformer, checkpoint_path: string) {
 
 rmsnorm(o: array of real, x: array of real, weight: array of real) {
 	# calculate sum of squares
+	minlen := len o;
+	if (len x < minlen)
+		minlen = len x;
+	if (len weight < minlen)
+		minlen = len weight;
+
 	ss := 0.0;
-	for (j := 0; j < len x; j++) {
+	for (j := 0; j < minlen; j++) {
 		ss += x[j] * x[j];
 	}
 	ss /= real (len x);
 	ss += 1e-5;
 	ss = 1.0 / math->sqrt(ss);
 	# normalize and scale
-	for (j = 0; j < len o; j++) {
+	for (j = 0; j < minlen; j++) {
 		o[j] = weight[j] * (ss * x[j]);
 	}
 }
@@ -383,6 +389,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 
 	build_transformer(t, hd argv);
 	c := t.config;
+	forward(t, 0, 0);
 
 	sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
 			  c.dim, c.hidden_dim, c.n_layers);
