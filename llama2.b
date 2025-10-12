@@ -88,6 +88,17 @@ read_int(fd: ref Sys->FD): int {
 	return read_int_ibuf[0];
 }
 
+read_real(fd: ref Sys->FD): real {
+	if (sys->read(fd, read_int_buf, 4) < 4)
+		raise "fail:eof";
+
+	endian_swap(read_int_buf);
+	ibuf := array[1] of real;
+	math->import_real32(read_int_buf, ibuf);
+
+	return ibuf[0];
+}
+
 read_weights(fd: ref Sys->FD, size: int): array of real {
 	buf := array[size * 4] of byte;
 	weights := array[size] of real;
@@ -100,6 +111,15 @@ read_weights(fd: ref Sys->FD, size: int): array of real {
 	math->import_real32(buf, weights);
 
 	return weights;
+}
+
+read_string(fd: ref Sys->FD, size: int): string {
+	buf := array[size] of byte;
+
+	if (sys->read(fd, buf, len buf) != len buf)
+		raise "fail:eof";
+
+	return string buf;
 }
 
 Config.read(c: self ref Config, fd: ref Sys->FD) {
@@ -372,6 +392,47 @@ forward(transformer: ref Transformer, token: int, pos: int): array of real {
 	return s.logits;
 }
 
+# ----------------------------------------------------------
+# The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
+
+TokenIndex: adt {
+	str: string;
+	id: int;
+};
+
+Tokenizer : adt {
+	vocab: array of string;
+	vocab_scores: array of real;
+	sorted_vocab: array of TokenIndex;
+	vocab_size: int;
+	max_token_length: int;
+	byte_pieces: array of byte;
+};
+
+build_tokenizer(t: ref Tokenizer, tokenizer_path: string, vocab_size: int) {
+	# i should have written the vocab_size into the tokenizer file... sigh
+	t.vocab_size = vocab_size;
+	# allocate space to hold the scores and the strings
+	t.vocab = array[vocab_size] of string;
+	t.vocab_scores = array[vocab_size] of real;
+	t.sorted_vocab = nil; # initialized lazily
+	t.byte_pieces = array[512] of byte;
+	for (i := 0; i < 256; i++) {
+		t.byte_pieces[i * 2] = byte i;
+		t.byte_pieces[i * 2 + 1] = byte '\0';
+	}
+	# read in the file
+	fd := sys->open(tokenizer_path, sys->OREAD);
+	t.max_token_length = read_int(fd);
+	size: int;
+	for (i = 0; i < vocab_size; i++) {
+		t.vocab_scores[i] = read_real(fd);
+		size = read_int(fd);
+		t.vocab[i] = read_string(fd, size);
+	}
+}
+	
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	sys = load Sys Sys->PATH;
 	math = load Math Math->PATH;
@@ -380,6 +441,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	read_int_ibuf = array[1] of int;
 
 	t := ref Transformer;
+	tk := ref Tokenizer;
 
 	argv = tl argv;
 	if (argv == nil)
@@ -389,6 +451,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 
 	build_transformer(t, hd argv);
 	c := t.config;
+	build_tokenizer(tk, "tokenizer.bin", c.vocab_size);
 	forward(t, 0, 0);
 
 	sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
@@ -396,4 +459,6 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	sys->print("n_heads: %d, n_kv_heads: %d, vocab_size: %d\n",
 			  c.n_heads, c.n_kv_heads, c.vocab_size);
 	sys->print("seq_len: %d\n", c.seq_len);
+	sys->print("vocab[400]: %s, vocab[401]: %s\n",
+			 tk.vocab[400], tk.vocab[401]);
 }
