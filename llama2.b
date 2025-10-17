@@ -547,6 +547,7 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 }
 
 init(ctxt: ref Draw->Context, argv: list of string) {
+	# Initialize modules and variables
 	sys = load Sys Sys->PATH;
 	math = load Math Math->PATH;
 	strinttab = load StringIntTab StringIntTab->PATH;
@@ -554,25 +555,35 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	read_int_buf = array[4] of byte;
 	read_int_ibuf = array[1] of int;
 
-	t := ref Transformer;
 	tk := ref Tokenizer;
 
+	# Parse arguments
 	argv = tl argv;
 	if (argv == nil)
 		raise "fail:noarg";
 
 	sys->print("argv: %s\n", hd argv);
 
+	# Load transformer
+	t := ref Transformer;
+	sys->print("loading transformer...");
 	build_transformer(t, hd argv);
-	c := t.config;
-	build_tokenizer(tk, "tokenizer.bin", c.vocab_size);
-	forward(t, 0, 0);
+	sys->print(" loaded!\n");
 
+	# Print model data
+	c := t.config;
 	sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
 			  c.dim, c.hidden_dim, c.n_layers);
 	sys->print("n_heads: %d, n_kv_heads: %d, vocab_size: %d\n",
 			  c.n_heads, c.n_kv_heads, c.vocab_size);
 	sys->print("seq_len: %d\n", c.seq_len);
+
+	# Load tokenizer
+	sys->print("loading tokenizer...");
+	build_tokenizer(tk, "tokenizer.bin", c.vocab_size);
+	sys->print(" loaded!\n");
+
+	# Test tokenizer
 	sys->print("vocab[400]: %s, vocab[401]: %s\n",
 			 tk.vocab[400], tk.vocab[401]);
 	a := array[100] of int;
