@@ -5,9 +5,11 @@ implement Llama2;
 include "sys.m";
 include "draw.m";
 include "math.m";
+include "strinttab.m";
 
 sys: Sys;
 math: Math;
+strinttab: StringIntTab;
 
 read_int_buf: array of byte;
 read_int_ibuf : array of int;
@@ -395,15 +397,10 @@ forward(transformer: ref Transformer, token: int, pos: int): array of real {
 # ----------------------------------------------------------
 # The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
 
-TokenIndex: adt {
-	str: string;
-	id: int;
-};
-
 Tokenizer : adt {
 	vocab: array of string;
 	vocab_scores: array of real;
-	sorted_vocab: array of TokenIndex;
+	sorted_vocab: array of StringIntTab->StringInt;
 	vocab_size: int;
 	max_token_length: int;
 	byte_pieces: array of byte;
@@ -431,11 +428,128 @@ build_tokenizer(t: ref Tokenizer, tokenizer_path: string, vocab_size: int) {
 		t.vocab[i] = read_string(fd, size);
 	}
 }
+
+decode(t: ref Tokenizer, prev_token: int, token: int): string {
+	piece := t.vocab[token];
+	# following BOS (1) token, stencepiece decoder strips any leading whitespace
+	if (prev_token == 1 && piece[0] == ' ')
+		return t.vocab[token + 1];
+	return piece;
+}
+
+sort(a: array of strinttab->StringInt) {
+	mergesort(a, array[len a] of strinttab->StringInt);
+}
+
+mergesort(a, b: array of strinttab->StringInt) {
+	r := len a;
+	if (r > 1) {
+		m := (r - 1) / 2 + 1;
+		mergesort(a[0:m], b[0:m]);
+		mergesort(a[m:], b[m:]);
+		b[0:] = a;
+		for ((i, j, k) := (0, m, 0); i < m && j < r; k++) {
+			if(b[i].key > b[j].key)
+				a[k] = b[j++];
+			else
+				a[k] = b[i++];
+		}
+		if (i < m)
+			a[k:] = b[i:m];
+		else if (j < r)
+			a[k:] = b[j:r];
+	}
+}
+
+encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int): int {
+	if (t.sorted_vocab == nil) {
+		# lazily allocate and sort the vocabulary
+		t.sorted_vocab = array[t.vocab_size] of strinttab->StringInt;
+		for (i := 0; i < t.vocab_size; i++) {
+			t.sorted_vocab[i].key = t.vocab[i];
+			t.sorted_vocab[i].val = i;
+		}
+		sort(t.sorted_vocab);
+	}
+
+	# create a temporary buffer that will store merge candidates
+	# TODO: remove, unneeded since UTF-8 is handled by Limbo
+	b: string;
+
+	# start at 0 tokens
+	# TODO: remove and replace with "len tokens"
+	n_tokens := 0;
+
+	# add optional BOS (=1) token, if desired
+	if (bos)
+		tokens[n_tokens++] = 1;
+
+	# add_dummy_prefix is true by default
+	# so prepend a dummy prefix token to the input string, but only if text != ""
+	if (len text != 0) {
+		(found, dummy_prefix) := strinttab->lookup(t.sorted_vocab, " ");
+		if (found)
+			tokens[n_tokens++] = dummy_prefix;
+	}
+
+	for (i := 0; i < len text; i++) {
+		c := text[i];
+
+		# append the current character to the buffer
+		b[len b] = c;
+
+		# lookup 
+		(found, id) := strinttab->lookup(t.sorted_vocab, b);
+
+		if (found)
+			# we found this codepoint in vocab, add it as a token
+			# TODO: byte fallback encoding
+			tokens[n_tokens++] = id;
+
+		b = "";
+	}
+
+	# merge the best consecutive pair each iteration, according to the scores in vocab_scores
+	while (1) {
+		best_score := -1e10;
+		best_id := -1;
+		best_idx := -1;
+
+		for (i = 0; i < (n_tokens - 1); i++) {
+			# check if we can merge the pair (tokens[i], tokens[i + 1])
+			(found, id) := strinttab->lookup(t.sorted_vocab,
+									 t.vocab[tokens[i]] + t.vocab[tokens[i + 1]]);
+			if (found && t.vocab_scores[id] > best_score) {
+				# this merge pair exists in vocab! record its score and position
+				best_score = t.vocab_scores[id];
+				best_id = id;
+				best_idx = i;
+			}
+		}
+
+		if (best_idx == -1)
+			# we couldn't find any more pairs to merge, so we're done
+			break;
+
+		# merge the consecutie pair (best_idx, best_idx + 1) into new token best_id
+		tokens[best_idx] = best_id;
+		# delete token at position best_idx + 1, shift the entire sequence back 1
+		for (i = best_idx + 1; i < (n_tokens - 1); i++)
+			tokens[i] = tokens[i + 1];
+		n_tokens--; # token length decreased
+	}
+
+	if (eos)
+		# add optional EOS (= 2) token, if desired
+		tokens[n_tokens++] = 2;
 	
+	return n_tokens;
+}
 
 init(ctxt: ref Draw->Context, argv: list of string) {
 	sys = load Sys Sys->PATH;
 	math = load Math Math->PATH;
+	strinttab = load StringIntTab StringIntTab->PATH;
 
 	read_int_buf = array[4] of byte;
 	read_int_ibuf = array[1] of int;
@@ -461,4 +575,11 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	sys->print("seq_len: %d\n", c.seq_len);
 	sys->print("vocab[400]: %s, vocab[401]: %s\n",
 			 tk.vocab[400], tk.vocab[401]);
+	a := array[100] of int;
+	n := encode(tk, "Hello, this is Llama inside Inferno!!", 0, 0, a);
+	sys->print("tokenized Hello, this is Llama inside Inferno!!: %d tokens\n", n);
+	for (i := 0; i < n; i++) {
+		sys->print("%d %s;", a[i], decode(tk, a[i], a[i]));
+	}
+	sys->print("\n");
 }
