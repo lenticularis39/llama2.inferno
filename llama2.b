@@ -587,10 +587,33 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	sys->print("vocab[400]: %s, vocab[401]: %s\n",
 			 tk.vocab[400], tk.vocab[401]);
 	a := array[100] of int;
-	n := encode(tk, "Hello, this is Llama inside Inferno!!", 0, 0, a);
-	sys->print("tokenized Hello, this is Llama inside Inferno!!: %d tokens\n", n);
+	n := encode(tk, "The sky was blue and", 0, 0, a);
+	sys->print("tokenized The sky was blue and: %d tokens\n", n);
 	for (i := 0; i < n; i++) {
 		sys->print("%d %s;", a[i], decode(tk, a[i], a[i]));
+	}
+	sys->print("\n");
+
+	# Test inference
+	prev_token := 0;
+	token := 0;
+	for (i = 0; i < 40; i++) {
+		if (i < n) {
+			token = a[i];
+		}
+		logits := forward(t, token, i);
+		token_prob := 0.0;
+		for (j := 0; j < len logits; j++) {
+			if (logits[j] > token_prob) {
+				token = j;
+				token_prob = logits[j];
+			}
+		}
+		if (i < n)
+			sys->print("%s", decode(tk, prev_token, a[i]));
+		else
+			sys->print("%s", decode(tk, prev_token, token));
+		prev_token = token;
 	}
 	sys->print("\n");
 }
