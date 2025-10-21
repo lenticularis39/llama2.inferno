@@ -6,7 +6,7 @@ to Inferno/Limbo, in progress.
 ## feel the ~~magic~~ hellfire
 
 ```bash
-; limbo llama2.b
+; mk
 ; ./llama2 stories15M.bin
 ```
 

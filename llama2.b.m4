@@ -437,29 +437,33 @@ decode(t: ref Tokenizer, prev_token: int, token: int): string {
 	return piece;
 }
 
-sort(a: array of strinttab->StringInt) {
-	mergesort(a, array[len a] of strinttab->StringInt);
-}
-
-mergesort(a, b: array of strinttab->StringInt) {
-	r := len a;
-	if (r > 1) {
-		m := (r - 1) / 2 + 1;
-		mergesort(a[0:m], b[0:m]);
-		mergesort(a[m:], b[m:]);
-		b[0:] = a;
-		for ((i, j, k) := (0, m, 0); i < m && j < r; k++) {
-			if(b[i].key > b[j].key)
-				a[k] = b[j++];
-			else
-				a[k] = b[i++];
-		}
-		if (i < m)
-			a[k:] = b[i:m];
-		else if (j < r)
-			a[k:] = b[j:r];
+define(DECLARE_SORT,
+	sort_$2(a: array of $1) {
+		mergesort_$2(a, array[len a] of $1);
 	}
-}
+
+	mergesort_$2(a, b: array of $1) {
+		r := len a;
+		if (r > 1) {
+			m := (r - 1) / 2 + 1;
+			mergesort_$2(a[0:m], b[0:m]);
+			mergesort_$2(a[m:], b[m:]);
+			b[0:] = a;
+			for ((i, j, k) := (0, m, 0); i < m && j < r; k++) {
+				if(b[i].$3 $4 b[j].$3)
+					a[k] = b[j++];
+				else
+					a[k] = b[i++];
+			}
+			if (i < m)
+				a[k:] = b[i:m];
+			else if (j < r)
+				a[k:] = b[j:r];
+		}
+	}
+)
+
+DECLARE_SORT(strinttab->StringInt, strinttab, key, >)
 
 encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int): int {
 	if (t.sorted_vocab == nil) {
@@ -469,7 +473,7 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 			t.sorted_vocab[i].key = t.vocab[i];
 			t.sorted_vocab[i].val = i;
 		}
-		sort(t.sorted_vocab);
+		sort_strinttab(t.sorted_vocab);
 	}
 
 	# create a temporary buffer that will store merge candidates
@@ -546,6 +550,138 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 	return n_tokens;
 }
 
+# ----------------------------------------------------------
+# The Sampler, which takes logits and returns a sampled token
+# sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
+ProbIndex: adt {
+	prob: real;
+	index: int;
+};
+
+Sampler: adt {
+	vocab_size: int;
+	probindex: array of ProbIndex;
+	temperature: real;
+	topp: real;
+	rng_state: big;
+};
+
+sample_argmax(probabilities: array of real): int {
+	# return the index that has the highest probability
+	max_i := 0;
+	max_p := probabilities[0];
+	for (i := 1; i < len probabilities; i++) {
+		if (probabilities[i] > max_p) {
+			max_i = i;
+			max_p = probabilities[i];
+		}
+	}
+	return max_i;
+}
+
+sample_mult(probabilities: array of real, coin: real): int {
+	# sample index from probabilities (they must sum to 1!)
+	# coin is a random number in [0, 1), usually from random_real()
+	cdf := 0.0;
+	for (i := 0; i < len probabilities; i++) {
+		cdf += probabilities[i];
+		if (coin < cdf)
+			return i;
+	}
+	return len probabilities - 1; # in case of rounding errors
+}
+
+DECLARE_SORT(ProbIndex, probindex, prob, <)
+
+sample_topp(probabilities: array of real, topp: real, probindex: array of ProbIndex, coin: real): int {
+	# top-p sampling (or "nucleus sampling") samples from the smallest set of
+	# tokens that exceed probability topp. This way we never sample tokens that
+	# have very low probabilities and are less likely to go "off the rails".
+	# coin is a random number in [0, 1), usually from random_real()
+
+	n0 := 0;
+	# indices are sorted in descending order of probabilities
+	# values smaller than (1 - topp) / (n - 1) cannot be part of the result
+	# so for efficiency we crop these out as candidates before sorting
+	cutoff := (1.0 - topp) / real (len probabilities - 1);
+	for (i := 0; i < len probabilities; i++) {
+		if (probabilities[i] >= cutoff) {
+			probindex[n0].index = i;
+			probindex[n0].prob = probabilities[i];
+			n0++;
+		}
+	}
+	probindex = probindex[:n0];
+	sort_probindex(probindex);
+
+	# truncate the list where cumulative probability exceeds topp
+	cumulative_prob := 0.0;
+	last_idx := n0 - 1; # in case of rounding errors, consider all elements
+	for (i = 0; i < n0; i++) {
+		cumulative_prob += probindex[i].prob;
+		if (cumulative_prob > topp) {
+			last_idx = i;
+			break; # we've exceeded topp by including last_idx
+		}
+	}
+
+	# sample from the truncated list
+	r := coin * cumulative_prob;
+	cdf := 0.0;
+	for (i = 0; i <= last_idx; i++) {
+		cdf += probindex[i].prob;
+		if (r < cdf) {
+			return probindex[i].index;
+		}
+	}
+	return probindex[last_idx].index; # in case of rounding errors
+}
+
+build_sampler(sampler: ref Sampler, vocab_size: int, temperature: real, topp: real, rng_seed: big) {
+	sampler.vocab_size = vocab_size;
+	sampler.temperature = temperature;
+	sampler.topp = topp;
+	sampler.rng_state = rng_seed;
+	# buffer only used for nucleus sampling; may not need but it's ~small
+	sampler.probindex = array[sampler.vocab_size] of ProbIndex;
+}
+
+random_int(sampler: ref Sampler): int {
+	sampler.rng_state ^= sampler.rng_state >> 12;
+	sampler.rng_state ^= sampler.rng_state << 25;
+	sampler.rng_state ^= sampler.rng_state >> 27;
+	return int ((sampler.rng_state * 16r2545F4914F6CDD1) >> 32);
+}
+
+random_real(sampler: ref Sampler): real {
+	return (real (random_int(sampler) >> 8)) / 16777216.0;
+}
+
+sample(sampler: ref Sampler, logits: array of real): int {
+	# sample the token given the logits and some hyperparameters
+	next: int;
+	if (sampler.temperature == 0.0) {
+		# greedy argmax sampling: take the token with the highest probability
+		next = sample_argmax(logits);
+	} else {
+		# apply the temperature to the logits
+		for (q := 0; q < len logits; q++)
+			logits[q] /= sampler.temperature;
+		# apply softmax to the logits to get the probabilities for next token
+		softmax(logits);
+		# flip a (float) coin (this is our source of entropy for sampling)
+		coin := random_real(sampler);
+		# we sample from this distribution to get the next token
+		if (sampler.topp <= 0.0 || sampler.topp >= 1.0)
+			# simply sample from the predicted probability distribution
+			next = sample_mult(logits, coin);
+		else
+			# top-p (nucleus) sampling, clamping the least likely tokens to zero
+			next = sample_topp(logits, sampler.topp, sampler.probindex, coin);
+	}
+	return next;
+}
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	# Initialize modules and variables
 	sys = load Sys Sys->PATH;
@@ -554,8 +690,6 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 
 	read_int_buf = array[4] of byte;
 	read_int_ibuf = array[1] of int;
-
-	tk := ref Tokenizer;
 
 	# Parse arguments
 	argv = tl argv;
@@ -584,6 +718,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	sys->print("seq_len: %d\n", c.seq_len);
 
 	# Load tokenizer
+	tk := ref Tokenizer;
 	sys->print("loading tokenizer...");
 	build_tokenizer(tk, "tokenizer.bin", c.vocab_size);
 	sys->print(" loaded!\n");
@@ -599,6 +734,12 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	}
 	sys->print("\n");
 
+	# Load sampler
+	sampler := ref Sampler;
+	sys->print("building sampler...");
+	build_sampler(sampler, c.vocab_size, 1.0, 0.9, big 42);
+	sys->print(" built!\n");
+
 	# Test inference
 	prev_token := 0;
 	token := 0;
@@ -607,13 +748,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 			token = a[i];
 		}
 		logits := forward(t, token, i);
-		token_prob := 0.0;
-		for (j := 0; j < len logits; j++) {
-			if (logits[j] > token_prob) {
-				token = j;
-				token_prob = logits[j];
-			}
-		}
+		token = sample(sampler, logits);
 		if (i < n)
 			sys->print("%s", decode(tk, prev_token, a[i]));
 		else
