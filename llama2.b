@@ -561,13 +561,18 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	argv = tl argv;
 	if (argv == nil)
 		raise "fail:noarg";
+	tfile := hd argv;
 
-	sys->print("argv: %s\n", hd argv);
+	argv = tl argv;
+	prompt := "The sky was blue and";
+	if (argv != nil) {
+		prompt = hd argv;
+	}
 
 	# Load transformer
 	t := ref Transformer;
 	sys->print("loading transformer...");
-	build_transformer(t, hd argv);
+	build_transformer(t, tfile);
 	sys->print(" loaded!\n");
 
 	# Print model data
@@ -587,8 +592,8 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	sys->print("vocab[400]: %s, vocab[401]: %s\n",
 			 tk.vocab[400], tk.vocab[401]);
 	a := array[100] of int;
-	n := encode(tk, "The sky was blue and", 0, 0, a);
-	sys->print("tokenized The sky was blue and: %d tokens\n", n);
+	n := encode(tk, prompt, 0, 0, a);
+	sys->print("tokenized %s: %d tokens\n", prompt, n);
 	for (i := 0; i < n; i++) {
 		sys->print("%d %s;", a[i], decode(tk, a[i], a[i]));
 	}
