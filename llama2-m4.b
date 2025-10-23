@@ -743,15 +743,19 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	# Test inference
 	prev_token := 0;
 	token := 0;
-	for (i = 0; i < 40; i++) {
+	(have_stop_token, stop_token) := strinttab->lookup(tk.sorted_vocab, "\n<s>\n");
+
+	for (i = 0; i < 200; i++) {
 		if (i < n) {
 			token = a[i];
 		}
 		logits := forward(t, token, i);
 		token = sample(sampler, logits);
+		if (have_stop_token && token == stop_token)
+			break;
 		if (i < n)
 			sys->print("%s", decode(tk, prev_token, a[i]));
-		else
+		if (i >= n - 1)
 			sys->print("%s", decode(tk, prev_token, token));
 		prev_token = token;
 	}
