@@ -433,7 +433,7 @@ decode(t: ref Tokenizer, prev_token: int, token: int): string {
 	piece := t.vocab[token];
 	# following BOS (1) token, stencepiece decoder strips any leading whitespace
 	if (prev_token == 1 && piece[0] == ' ')
-		return t.vocab[token + 1];
+		piece = piece[1:];
 	return piece;
 }
 
@@ -682,6 +682,82 @@ sample(sampler: ref Sampler, logits: array of real): int {
 	return next;
 }
 
+# ----------------------------------------------------------
+# utilities: time
+
+time_in_ms(): big {
+	# return time in milliseconds, for benchmarking the model speed
+	fd := sys->open("/dev/time", sys->OREAD);
+	if (fd == nil)
+		return big 0;
+	buf := array[128] of byte;
+	n := sys->read(fd, buf, len buf);
+	if (n < 0)
+		return big 0;
+
+	t := (big string buf[0:n]) / big 1000;
+	return t;
+}
+
+# ----------------------------------------------------------
+# generation loop
+
+generate(transformer: ref Transformer,
+	       tokenizer: ref Tokenizer,
+	       sampler: ref Sampler,
+	       prompt: string,
+	       steps: int) {
+	# encode the (string) prompt into tokens sequence
+	prompt_tokens := array[len prompt + 3] of int; # +3 for '\0', ?BOS, ?EOS
+	num_prompt_tokens := encode(tokenizer, prompt, 1, 0, prompt_tokens);
+	if (num_prompt_tokens < 1)
+		raise "fail:token";
+
+	# start the main loop
+	start := big 0; # used to time our code, only initiaized after first iteration
+	next: int; # will store the next token in the sequence
+	token := prompt_tokens[0]; # kick off with the first token in the prompt
+	pos := 0; # position in the sequence
+	while (pos < steps) {
+		# forward the transformer to get logits for the next token
+		logits := forward(transformer, token, pos);
+
+		# advance the state machine
+		if (pos < num_prompt_tokens - 1) {
+			# if we are still processing the input prompt, force
+			# the next prompt token
+			next = prompt_tokens[pos + 1];
+		} else {
+			# otherwise sample the next token from the logits
+			next = sample(sampler, logits);
+		}
+		pos++;
+
+		# data-dependent terminating condition: the BOS (=1) token
+		# delimits sequences
+		if (next == 1)
+			break;
+
+		# print the token as string, decode it with the Tokenizer object
+		piece := decode(tokenizer, token, next);
+		# TODO: implement safe_printf/safe_print and use it here
+		sys->print("%s", piece);
+		token = next;
+
+		# init the timer here because the first iteration can be slower
+		if (start == big 0)
+			start = time_in_ms();
+	}
+	sys->print("\n");
+
+	# report achieved tok/s (pos-1 because the timer starts after first iteration)
+	if (pos > 1) {
+		end := time_in_ms();
+		sys->print("achieved tok/s: %f\n",
+				 (real (pos - 1) * 1000.0) / real (end - start));
+	}
+}
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	# Initialize modules and variables
 	sys = load Sys Sys->PATH;
@@ -740,24 +816,6 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	build_sampler(sampler, c.vocab_size, 1.0, 0.9, big 42);
 	sys->print(" built!\n");
 
-	# Test inference
-	prev_token := 0;
-	token := 0;
-	(have_stop_token, stop_token) := strinttab->lookup(tk.sorted_vocab, "\n<s>\n");
-
-	for (i = 0; i < 200; i++) {
-		if (i < n) {
-			token = a[i];
-		}
-		logits := forward(t, token, i);
-		token = sample(sampler, logits);
-		if (have_stop_token && token == stop_token)
-			break;
-		if (i < n)
-			sys->print("%s", decode(tk, prev_token, a[i]));
-		if (i >= n - 1)
-			sys->print("%s", decode(tk, prev_token, token));
-		prev_token = token;
-	}
-	sys->print("\n");
+	# Run generate loop
+	generate(t, tk, sampler, prompt, 100);
 }
