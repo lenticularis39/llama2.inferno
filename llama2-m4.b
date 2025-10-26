@@ -476,10 +476,6 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 		sort_strinttab(t.sorted_vocab);
 	}
 
-	# create a temporary buffer that will store merge candidates
-	# TODO: remove, unneeded since UTF-8 is handled by Limbo
-	b: string;
-
 	# start at 0 tokens
 	# TODO: remove and replace with "len tokens"
 	n_tokens := 0;
@@ -496,21 +492,16 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 			tokens[n_tokens++] = dummy_prefix;
 	}
 
-	for (i := 0; i < len text; i++) {
-		c := text[i];
-
-		# append the current character to the buffer
-		b[len b] = c;
-
+	for (i := 0; i < len text; i++) { 
 		# lookup 
-		(found, id) := strinttab->lookup(t.sorted_vocab, b);
+		(found, id) := strinttab->lookup(t.sorted_vocab, text[i:i + 1]);
 
 		if (found)
 			# we found this codepoint in vocab, add it as a token
-			# TODO: byte fallback encoding
 			tokens[n_tokens++] = id;
-
-		b = "";
+		else
+			# token not known, encode as placeholder
+			tokens[n_tokens++] = -text[i];
 	}
 
 	# merge the best consecutive pair each iteration, according to the scores in vocab_scores
@@ -521,8 +512,22 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 
 		for (i = 0; i < (n_tokens - 1); i++) {
 			# check if we can merge the pair (tokens[i], tokens[i + 1])
-			(found, id) := strinttab->lookup(t.sorted_vocab,
-									 t.vocab[tokens[i]] + t.vocab[tokens[i + 1]]);
+			a: string;
+			b: string;
+			if (tokens[i] >= 0)
+				# this is a real token, use the word
+				a = t.vocab[tokens[i]];
+			else
+				# this is a placeholder, convert it to the corresponding character
+				a[0] = -tokens[i];
+			if (tokens[i + 1] >= 0)
+				# this is a real token, use the word
+				b = t.vocab[tokens[i + 1]];
+			else
+				# this is a placeholder, convert it back to the corresponding character
+				b[0] = -tokens[i + 1];
+			(found, id) := strinttab->lookup(t.sorted_vocab, a + b);
+
 			if (found && t.vocab_scores[id] > best_score) {
 				# this merge pair exists in vocab! record its score and position
 				best_score = t.vocab_scores[id];
@@ -535,12 +540,18 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 			# we couldn't find any more pairs to merge, so we're done
 			break;
 
-		# merge the consecutie pair (best_idx, best_idx + 1) into new token best_id
+		# merge the consecutive pair (best_idx, best_idx + 1) into new token best_id
 		tokens[best_idx] = best_id;
 		# delete token at position best_idx + 1, shift the entire sequence back 1
 		for (i = best_idx + 1; i < (n_tokens - 1); i++)
 			tokens[i] = tokens[i + 1];
 		n_tokens--; # token length decreased
+	}
+
+	# replace any leftover placeholder tokens with byte encoding
+	for (i = 0; i < n_tokens; i++) {
+		if (tokens[i] < 0)
+			tokens[i] = 3 - tokens[i];
 	}
 
 	if (eos)
