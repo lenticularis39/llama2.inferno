@@ -516,7 +516,6 @@ encode(t: ref Tokenizer, text: string, bos: int, eos: int, tokens: array of int)
 	}
 
 	# start at 0 tokens
-	# TODO: remove and replace with "len tokens"
 	n_tokens := 0;
 
 	# add optional BOS (=1) token, if desired
