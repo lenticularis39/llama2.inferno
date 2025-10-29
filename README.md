@@ -1,7 +1,11 @@
 ## llama2.inferno
 
 This is a port of Andrej Karpathy's [llama2.c](https://github.com/karpathy/llama2.c)
-to Inferno/Limbo, in progress.
+to [Inferno](http://inferno-os.org), an open source distributed cross-platform operating
+system created at Bell Labs and inspired by Plan 9.
+
+Inferno applications, including llama2.inferno, are programmed in the [Limbo](http://www.inferno-os.org/inferno/papers/limbo.pdf)
+programming language.
 
 ## prerequisities
 
