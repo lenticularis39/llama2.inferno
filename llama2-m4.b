@@ -444,11 +444,35 @@ build_tokenizer(t: ref Tokenizer, tokenizer_path: string, vocab_size: int) {
 	}
 }
 
+hex_to_string(hex: string): string {
+	# convert two-byte hexadecimal value to string
+	char := 0;
+	for (i := 0; i < 2; i++) {
+		digit := hex[i];
+		if (digit >= '0' && digit <= '9')
+			digit -= '0';
+		else if (digit >= 'A' && digit <= 'F')
+			digit = digit - 'A' + 10;
+		else {
+			sys->fprint(stderr, "llama2: invalid hex value in raw byte token: %s\n", hex);
+			raise "fail:tokenizer";
+		}
+		char += (16 - 15 * i) * digit;
+	}
+	return string array[1] of { * => byte char };
+}
+
 decode(t: ref Tokenizer, prev_token: int, token: int): string {
 	piece := t.vocab[token];
 	# following BOS (1) token, stencepiece decoder strips any leading whitespace
 	if (prev_token == 1 && piece[0] == ' ')
 		piece = piece[1:];
+	# careful, some tokens designate raw bytes, and look like e.g. '<0x01>'
+	# parse this and convert and return the actual byte
+	if (len piece == 6 && piece[:3] == "<0x" && piece[5:] == ">") {
+		piece = hex_to_string(piece[3:5]);
+	}
+		
 	return piece;
 }
 
