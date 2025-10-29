@@ -13,6 +13,7 @@ strinttab: StringIntTab;
 
 read_int_buf: array of byte;
 read_int_ibuf : array of int;
+stderr: ref Sys->FD;
 
 Config: adt {
 	dim: int; # transformer dimension
@@ -81,8 +82,10 @@ endian_swap(b : array of byte) {
 }
 
 read_int(fd: ref Sys->FD): int {
-	if (sys->read(fd, read_int_buf, 4) < 4)
+	if (sys->read(fd, read_int_buf, 4) < 4) {
+		sys->fprint(stderr, "llama2: cannot read model: unexpected end of file\n");
 		raise "fail:eof";
+	}
 
 	endian_swap(read_int_buf);
 	math->import_int(read_int_buf, read_int_ibuf);
@@ -91,8 +94,10 @@ read_int(fd: ref Sys->FD): int {
 }
 
 read_real(fd: ref Sys->FD): real {
-	if (sys->read(fd, read_int_buf, 4) < 4)
+	if (sys->read(fd, read_int_buf, 4) < 4) {
+		sys->fprint(stderr, "llama2: cannot read model: unexpected end of file\n");
 		raise "fail:eof";
+	}
 
 	endian_swap(read_int_buf);
 	ibuf := array[1] of real;
@@ -105,8 +110,10 @@ read_weights(fd: ref Sys->FD, size: int): array of real {
 	buf := array[size * 4] of byte;
 	weights := array[size] of real;
 
-	if (sys->read(fd, buf, len buf) != len buf)
+	if (sys->read(fd, buf, len buf) != len buf) {
+		sys->fprint(stderr, "llama2: cannot read weights: unexpected end of file\n");
 		raise "fail:eof";
+	}
 
 	for (i := 0; i < size; i++)
 		endian_swap(buf[4 * i:]);
@@ -118,8 +125,10 @@ read_weights(fd: ref Sys->FD, size: int): array of real {
 read_string(fd: ref Sys->FD, size: int): string {
 	buf := array[size] of byte;
 
-	if (sys->read(fd, buf, len buf) != len buf)
+	if (sys->read(fd, buf, len buf) != len buf) {
+		sys->fprint(stderr, "llama2: cannot read token: unexpected end of file\n");
 		raise "fail:eof";
+	}
 
 	return string buf;
 }
@@ -176,8 +185,10 @@ read_checkpoint(checkpoint: string, config: ref Config, weights: ref Transformer
 	buffer: array of int;
 
 	fd := sys->open(checkpoint, sys->OREAD);
-	if (fd == nil)
+	if (fd == nil) {
+		sys->fprint(stderr, "llama2: no such file or directory: %s\n", checkpoint);
 		raise "fail:open";
+	}
 
 	# read in the config header
 	config.read(fd);
@@ -420,6 +431,10 @@ build_tokenizer(t: ref Tokenizer, tokenizer_path: string, vocab_size: int) {
 	}
 	# read in the file
 	fd := sys->open(tokenizer_path, sys->OREAD);
+	if (fd == nil) {
+		sys->fprint(stderr, "llama2: no such file or directory: %s\n", tokenizer_path);
+		raise "fail:open";
+	}
 	t.max_token_length = read_int(fd);
 	size: int;
 	for (i = 0; i < vocab_size; i++) {
@@ -721,8 +736,10 @@ generate(transformer: ref Transformer,
 	# encode the (string) prompt into tokens sequence
 	prompt_tokens := array[len prompt + 3] of int; # +3 for '\0', ?BOS, ?EOS
 	num_prompt_tokens := encode(tokenizer, prompt, 1, 0, prompt_tokens);
-	if (num_prompt_tokens < 1)
+	if (num_prompt_tokens < 1) {
+		sys->fprint(stderr, "llama2: cannot encode empty prompt\n");
 		raise "fail:token";
+	}
 
 	# start the main loop
 	start := big 0; # used to time our code, only initiaized after first iteration
@@ -777,6 +794,7 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 
 	read_int_buf = array[4] of byte;
 	read_int_ibuf = array[1] of int;
+	stderr = sys->fildes(2);
 
 	# Parse arguments
 	argv = tl argv;
