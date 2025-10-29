@@ -786,6 +786,23 @@ generate(transformer: ref Transformer,
 	}
 }
 
+# ----------------------------------------------------------
+# CLI
+
+error_usage() {
+	sys->fprint(stderr, "Usage: llama2 <checkpoint> [options]\n");
+	sys->fprint(stderr, "Example: llama2 model.bin -n 256 -i 'Once upon a time'\n");
+	sys->fprint(stderr, "Options: \n");
+	sys->fprint(stderr, "  -v          verbose mode, default disabled\n");
+	sys->fprint(stderr, "  -t <float>  temperature in [0,inf], default 1.0\n");
+	sys->fprint(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1] default 0.9\n");
+	sys->fprint(stderr, "  -s <int>    random seed, default time(NULL)\n");
+	sys->fprint(stderr, "  -n <int>    number of steps to run for, default 256. 0 = max_seq_len\n");
+	sys->fprint(stderr, "  -i <string> input prompt\n");
+	sys->fprint(stderr, "  -z <string> optional path to custom tokenizer\n");
+	raise "fail:cmd";
+}
+
 init(ctxt: ref Draw->Context, argv: list of string) {
 	# Initialize modules and variables
 	sys = load Sys Sys->PATH;
@@ -796,55 +813,106 @@ init(ctxt: ref Draw->Context, argv: list of string) {
 	read_int_ibuf = array[1] of int;
 	stderr = sys->fildes(2);
 
-	# Parse arguments
-	argv = tl argv;
-	if (argv == nil)
-		raise "fail:noarg";
-	tfile := hd argv;
+	# default parameters
+	checkpoint_path: string;
+	tokenizer_path := "tokenizer.bin";
+	temperature := 1.0;
+	topp := 0.9;
+	steps := 256;
+	prompt: string;
+	rng_seed := big 0;
+	verbose := 0;
 
-	argv = tl argv;
-	prompt := "The sky was blue and";
-	if (argv != nil) {
-		prompt = hd argv;
+	# poor man's Limbo argparse so we can override the defaults above from the command line
+	if (len argv >= 2) {
+		argv = tl argv;
+		checkpoint_path = hd argv;
+		argv = tl argv;
+	} else {
+		error_usage();
 	}
 
-	# Load transformer
-	t := ref Transformer;
-	sys->print("loading transformer...");
-	build_transformer(t, tfile);
-	sys->print(" loaded!\n");
+	while (argv != nil) {
+		arg := hd argv;
+		rest := tl argv;
 
-	# Print model data
-	c := t.config;
-	sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
-			  c.dim, c.hidden_dim, c.n_layers);
-	sys->print("n_heads: %d, n_kv_heads: %d, vocab_size: %d\n",
-			  c.n_heads, c.n_kv_heads, c.vocab_size);
-	sys->print("seq_len: %d\n", c.seq_len);
+		# do some basic validation
+		if (arg[0] != '-')
+			# must start with dash
+			error_usage();
+		if (len arg != 2)
+			# must be -x (one dash, one letter)
+			error_usage();
 
-	# Load tokenizer
-	tk := ref Tokenizer;
-	sys->print("loading tokenizer...");
-	build_tokenizer(tk, "tokenizer.bin", c.vocab_size);
-	sys->print(" loaded!\n");
-
-	# Test tokenizer
-	sys->print("vocab[400]: %s, vocab[401]: %s\n",
-			 tk.vocab[400], tk.vocab[401]);
-	a := array[100] of int;
-	n := encode(tk, prompt, 0, 0, a);
-	sys->print("tokenized %s: %d tokens\n", prompt, n);
-	for (i := 0; i < n; i++) {
-		sys->print("%d %s;", a[i], decode(tk, a[i], a[i]));
+		# read in the args
+		if (arg == "-v") {
+			verbose = 1;
+			argv = rest;
+			continue;
+		}
+		if (rest == nil)
+			# all other options have an argument
+			error_usage();
+		opt := arg[1];
+		optarg := hd rest;
+		if (opt == 't')
+			temperature = real optarg;
+		else if (opt == 'p')
+			topp = real optarg;
+		else if (opt == 's')
+			rng_seed = big optarg;
+		else if (opt == 'n')
+			steps = int optarg;
+		else if (opt == 'i')
+			prompt = optarg;
+		else if (opt == 'z')
+			tokenizer_path = optarg;
+		else
+			error_usage();
+		
+		# shift arguments
+		argv = tl rest;
 	}
-	sys->print("\n");
 
-	# Load sampler
+	# parameter validation/overrides
+	if (rng_seed <= big 0)
+		rng_seed = time_in_ms();
+	if (temperature < 0.0)
+		temperature = 0.0;
+	if (topp < 0.0 || 1.0 < topp)
+		topp = 0.9;
+	if (steps < 0)
+		steps = 0;
+
+	# build the Transformer via the model .bin file
+	transformer := ref Transformer;
+	if (verbose)
+		sys->print("loading...");
+	build_transformer(transformer, checkpoint_path);
+	if (verbose)
+		sys->print(" loaded!\n");
+	if (steps == 0 || steps > transformer.config.seq_len)
+		# override to ~max length
+		steps = transformer.config.seq_len;
+
+	if (verbose) {
+		# print model data
+		c := transformer.config;
+		sys->print("dim: %d, hidden_dim: %d, n_layers: %d\n",
+				  c.dim, c.hidden_dim, c.n_layers);
+		sys->print("n_heads: %d, n_kv_heads: %d, vocab_size: %d\n",
+				  c.n_heads, c.n_kv_heads, c.vocab_size);
+		sys->print("seq_len: %d\n", c.seq_len);
+	}
+
+	# build the Tokenizer via the tokenizer .bin file
+	tokenizer := ref Tokenizer;
+	build_tokenizer(tokenizer, tokenizer_path, transformer.config.vocab_size);
+
+	# build the Sampler
 	sampler := ref Sampler;
-	sys->print("building sampler...");
-	build_sampler(sampler, c.vocab_size, 1.0, 0.9, big 42);
-	sys->print(" built!\n");
+	build_sampler(sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
 
-	# Run generate loop
-	generate(t, tk, sampler, prompt, 100);
+	# run!
+	generate(transformer, tokenizer, sampler, prompt, steps);
 }
