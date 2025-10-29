@@ -12,7 +12,7 @@ math: Math;
 strinttab: StringIntTab;
 
 read_int_buf: array of byte;
-read_int_ibuf : array of int;
+read_int_ibuf: array of int;
 stderr: ref Sys->FD;
 
 Config: adt {
@@ -144,8 +144,8 @@ Config.read(c: self ref Config, fd: ref Sys->FD) {
 }
 
 TransformerWeights.read(w: self ref TransformerWeights, c: ref Config, fd: ref Sys->FD) {
-	buf : array of byte;
-	size : int;
+	buf: array of byte;
+	size: int;
 
 	head_size := c.dim / c.n_heads;
 
@@ -312,7 +312,7 @@ forward(transformer: ref Transformer, token: int, pos: int): array of real {
 			else
 				rotn = 1;
 			for (v := 0; v < rotn; v++) {
-				vec : array of real;
+				vec: array of real;
 				if (v == 0)
 					vec = s.q;
 				else
@@ -453,29 +453,29 @@ decode(t: ref Tokenizer, prev_token: int, token: int): string {
 }
 
 define(DECLARE_SORT,
-	sort_$2(a: array of $1) {
-		mergesort_$2(a, array[len a] of $1);
-	}
+sort_$2(a: array of $1) {
+	mergesort_$2(a, array[len a] of $1);
+}
 
-	mergesort_$2(a, b: array of $1) {
-		r := len a;
-		if (r > 1) {
-			m := (r - 1) / 2 + 1;
-			mergesort_$2(a[0:m], b[0:m]);
-			mergesort_$2(a[m:], b[m:]);
-			b[0:] = a;
-			for ((i, j, k) := (0, m, 0); i < m && j < r; k++) {
-				if(b[i].$3 $4 b[j].$3)
-					a[k] = b[j++];
-				else
-					a[k] = b[i++];
-			}
-			if (i < m)
-				a[k:] = b[i:m];
-			else if (j < r)
-				a[k:] = b[j:r];
+mergesort_$2(a, b: array of $1) {
+	r := len a;
+	if (r > 1) {
+		m := (r - 1) / 2 + 1;
+		mergesort_$2(a[0:m], b[0:m]);
+		mergesort_$2(a[m:], b[m:]);
+		b[0:] = a;
+		for ((i, j, k) := (0, m, 0); i < m && j < r; k++) {
+			if(b[i].$3 $4 b[j].$3)
+				a[k] = b[j++];
+			else
+				a[k] = b[i++];
 		}
+		if (i < m)
+			a[k:] = b[i:m];
+		else if (j < r)
+			a[k:] = b[j:r];
 	}
+}
 )
 
 DECLARE_SORT(strinttab->StringInt, strinttab, key, >)
