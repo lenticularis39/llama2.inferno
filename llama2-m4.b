@@ -793,7 +793,7 @@ error_usage() {
 	sys->fprint(stderr, "Usage: llama2 <checkpoint> [options]\n");
 	sys->fprint(stderr, "Example: llama2 model.bin -n 256 -i 'Once upon a time'\n");
 	sys->fprint(stderr, "Options: \n");
-	sys->fprint(stderr, "  -v           verbose mode, default disabled\n");
+	sys->fprint(stderr, "  -v          verbose mode, default disabled\n");
 	sys->fprint(stderr, "  -t <float>  temperature in [0,inf], default 1.0\n");
 	sys->fprint(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1] default 0.9\n");
 	sys->fprint(stderr, "  -s <int>    random seed, default time(NULL)\n");
