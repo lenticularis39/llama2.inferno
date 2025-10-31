@@ -163,8 +163,11 @@ TransformerWeights.read(w: self ref TransformerWeights, c: ref Config, fd: ref S
 
 	if (c.shared_weights)
 		w.wcls = w.token_embedding_table;
-	else
-		w.wcls = read_weights(fd, c.seq_len * head_size);
+	else {
+		# skip what used to be freq_cis_real and freq_cis_imag
+		read_weights(fd, c.seq_len * head_size);
+		w.wcls = read_weights(fd, c.vocab_size * c.dim);
+	}
 }
 
 alloc_run_state(s: ref RunState, p: ref Config) {
